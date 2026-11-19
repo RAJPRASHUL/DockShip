@@ -3,7 +3,6 @@ from fastapi.testclient import TestClient
 from dockship.config import settings
 from dockship.main import app
 
-
 client = TestClient(app)
 
 

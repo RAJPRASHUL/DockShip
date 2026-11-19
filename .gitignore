@@ -1,5 +1,15 @@
 IMPLEMENTATION.md
 __pycache__/
+*.py[cod]
 .pytest_cache/
+.ruff_cache/
+.venv/
 .env
 dockship.db
+dockship.db-*
+*.log
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/
