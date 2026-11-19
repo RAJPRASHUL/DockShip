@@ -1,0 +1,1 @@
+dockship ALL=(root) NOPASSWD: /usr/sbin/nginx -t, /usr/bin/systemctl reload nginx, /usr/bin/systemctl restart dockship
