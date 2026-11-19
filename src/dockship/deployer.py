@@ -1,3 +1,4 @@
+import subprocess
 import time
 
 import docker
@@ -5,7 +6,7 @@ import httpx
 from docker import DockerClient
 from docker.types import LogConfig
 
-from dockship import db
+from dockship import db, nginx
 from dockship.config import settings
 
 
@@ -50,8 +51,8 @@ def healthy(container, port: int, path: str) -> bool:
 def deploy_image(
     client: DockerClient, app: dict, image: str, sha: str, deployment_id: str
 ) -> None:
-    port = app["blue_port"] if not app["active_color"] else app["green_port"]
-    color = "blue" if not app["active_color"] else "green"
+    color = "green" if app["active_color"] == "blue" else "blue"
+    port = app[f"{color}_port"]
     name = f"{app['name']}-{color}"
     remove_container(client, name)
     container = run_container(client, image, name, app, port)
@@ -60,6 +61,17 @@ def deploy_image(
         remove_container(client, name)
         db.update_deployment(deployment_id, status="failed", error=error[-4000:])
         return
+    try:
+        nginx.apply(app["name"], port)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        remove_container(client, name)
+        db.update_deployment(
+            deployment_id, status="failed", error=str(exc)[-4000:]
+        )
+        return
+    time.sleep(settings.drain_s)
+    if app["active_color"]:
+        remove_container(client, f"{app['name']}-{app['active_color']}")
     db.set_release(app["name"], color, sha)
     db.update_deployment(deployment_id, status="healthy", sha=sha)
 
