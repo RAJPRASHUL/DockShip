@@ -13,3 +13,8 @@ build/
 *.egg-info/
 .coverage
 htmlcov/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
