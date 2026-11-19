@@ -1,0 +1,27 @@
+[project]
+name = "dockship"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "docker",
+  "pydantic-settings",
+  "httpx",
+  "typer",
+  "rich",
+  "prometheus-client",
+]
+
+[project.scripts]
+dockship = "dockship.cli:app"
+
+[dependency-groups]
+dev = ["pytest", "httpx", "ruff"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dockship"]
