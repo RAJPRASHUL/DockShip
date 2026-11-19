@@ -69,6 +69,35 @@ def get_app(name: str) -> dict | None:
         return dict(row) if row else None
 
 
+def delete_app(name: str) -> bool:
+    with connect() as conn:
+        cursor = conn.execute("DELETE FROM apps WHERE name = ?", (name,))
+        conn.commit()
+        return cursor.rowcount == 1
+
+
+def find_apps(repo_url: str, branch: str) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM apps WHERE repo_url = ? AND branch = ?",
+            (repo_url, branch),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def record_delivery(delivery_id: str) -> bool:
+    with connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO deliveries (id, received_at)
+            VALUES (?, ?)
+            """,
+            (delivery_id, datetime.now(UTC).isoformat()),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+
+
 def create_app(name: str, repo_url: str, branch: str, health_path: str) -> dict:
     from dockship.ports import allocate_ports
 
