@@ -1,4 +1,6 @@
 import sqlite3
+import subprocess
+import threading
 import time
 
 import docker
@@ -10,6 +12,14 @@ from dockship.deployer import deploy_image, logs
 from dockship.models import AppCreate
 
 router = APIRouter(prefix="/apps", tags=["apps"])
+_locks: dict[str, threading.Lock] = {}
+_guard = threading.Lock()
+build_sem = threading.Semaphore(1)
+
+
+def app_lock(name: str) -> threading.Lock:
+    with _guard:
+        return _locks.setdefault(name, threading.Lock())
 
 
 @router.get("")
@@ -35,29 +45,63 @@ def register_app(payload: AppCreate) -> dict:
 
 
 def run_deploy(name: str, deployment_id: str) -> None:
-    started = time.monotonic()
-    working_dir = None
-    try:
-        app = db.get_app(name)
-        if not app:
-            raise RuntimeError("app not found")
-        db.update_deployment(deployment_id, status="building")
-        working_dir, sha = builder.clone(app["repo_url"], app["branch"])
-        image = builder.build(working_dir, name, sha)
-        db.update_deployment(deployment_id, status="deploying", sha=sha)
-        deploy_image(docker.from_env(), app, image, sha, deployment_id)
-    except (
-        OSError,
-        RuntimeError,
-        TimeoutError,
-        sqlite3.Error,
-        docker.errors.DockerException,
-    ) as exc:
-        db.update_deployment(deployment_id, status="failed", error=str(exc)[-4000:])
-    finally:
-        if working_dir:
-            builder.cleanup(working_dir)
-        db.update_deployment(deployment_id, duration_s=time.monotonic() - started)
+    with app_lock(name):
+        started = time.monotonic()
+        working_dir = None
+        try:
+            app = db.get_app(name)
+            if not app:
+                raise RuntimeError("app not found")
+            with build_sem:
+                db.update_deployment(deployment_id, status="building")
+                working_dir, sha = builder.clone(app["repo_url"], app["branch"])
+                image = builder.build(working_dir, name, sha)
+            db.update_deployment(deployment_id, status="deploying", sha=sha)
+            deploy_image(docker.from_env(), app, image, sha, deployment_id)
+        except (
+            OSError,
+            RuntimeError,
+            TimeoutError,
+            sqlite3.Error,
+            subprocess.CalledProcessError,
+            docker.errors.DockerException,
+        ) as exc:
+            db.update_deployment(deployment_id, status="failed", error=str(exc)[-4000:])
+        finally:
+            if working_dir:
+                builder.cleanup(working_dir)
+            db.update_deployment(
+                deployment_id, duration_s=time.monotonic() - started
+            )
+
+
+def run_rollback(name: str, deployment_id: str, sha: str) -> None:
+    with app_lock(name):
+        started = time.monotonic()
+        try:
+            app = db.get_app(name)
+            if not app:
+                raise RuntimeError("app not found")
+            db.update_deployment(deployment_id, status="deploying")
+            deploy_image(
+                docker.from_env(),
+                app,
+                f"dockship/{name}:{sha[:12]}",
+                sha,
+                deployment_id,
+            )
+        except (
+            OSError,
+            RuntimeError,
+            sqlite3.Error,
+            subprocess.CalledProcessError,
+            docker.errors.DockerException,
+        ) as exc:
+            db.update_deployment(deployment_id, status="failed", error=str(exc)[-4000:])
+        finally:
+            db.update_deployment(
+                deployment_id, duration_s=time.monotonic() - started
+            )
 
 
 @router.post("/{name}/deploy", status_code=202)
@@ -66,6 +110,19 @@ def deploy(name: str, background_tasks: BackgroundTasks) -> dict:
         raise HTTPException(status_code=404, detail="app not found")
     deployment_id = db.new_deployment(name, "manual")
     background_tasks.add_task(run_deploy, name, deployment_id)
+    return {"deployment_id": deployment_id}
+
+
+@router.post("/{name}/rollback", status_code=202)
+def rollback(name: str, background_tasks: BackgroundTasks) -> dict:
+    app = db.get_app(name)
+    if not app:
+        raise HTTPException(status_code=404, detail="app not found")
+    if not app["previous_sha"]:
+        raise HTTPException(status_code=409, detail="nothing to roll back to")
+    deployment_id = db.new_deployment(name, "rollback")
+    db.update_deployment(deployment_id, sha=app["previous_sha"])
+    background_tasks.add_task(run_rollback, name, deployment_id, app["previous_sha"])
     return {"deployment_id": deployment_id}
 
 
