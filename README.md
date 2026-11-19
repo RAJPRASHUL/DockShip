@@ -92,9 +92,22 @@ terraform destroy -var='key_name=<ec2-key-pair>'
 Destroying and recreating the instance changes the Elastic IP and therefore
 requires updating the GitHub webhook URL.
 
-## Metrics and security
+## Metrics, backups, and security
 
 Metrics and the management API are private and should be reached through the
-SSH tunnel. Deploy only trusted repositories: Dockerfiles execute on the
-deployment host. SSH is key-only, containers have CPU/memory/log limits, and
-the instance uses IMDSv2.
+SSH tunnel. The `/metrics` endpoint exposes deployment counters, deployment
+duration, and the active-app gauge.
+
+The instance role can back up SQLite without keys on disk:
+
+```bash
+/opt/dockship/deploy/scripts/backup.sh <backup-bucket>
+aws s3 cp s3://<backup-bucket>/backups/2026-01-01.db /tmp/restore.db
+sqlite3 /var/lib/dockship/dockship.db ".restore /tmp/restore.db"
+```
+
+Test a restore before relying on backups. Schedule the backup script at 02:00
+and run `deploy/scripts/cleanup.sh` weekly after confirming rollback images
+are retained. Deploy only trusted repositories: Dockerfiles execute on the
+deployment host. SSH is key-only, the webhook is rate-limited, containers
+have CPU/memory/log limits, and the instance uses IMDSv2.
