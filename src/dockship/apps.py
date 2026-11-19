@@ -126,6 +126,12 @@ def rollback(name: str, background_tasks: BackgroundTasks) -> dict:
     return {"deployment_id": deployment_id}
 
 
+@router.delete("/{name}", status_code=204)
+def delete(name: str) -> None:
+    if not db.delete_app(name):
+        raise HTTPException(status_code=404, detail="app not found")
+
+
 @router.get("/{name}/logs")
 def app_logs(name: str, tail: int = 100) -> dict:
     app = db.get_app(name)
