@@ -1,10 +1,13 @@
 import secrets
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from starlette.responses import Response
 
 from dockship.apps import router as apps_router
 from dockship.config import settings
-from dockship.db import get_deployment, init_db
+from dockship.db import get_deployment, init_db, list_apps
+from dockship.metrics import ACTIVE_APPS
 from dockship.webhook import router as webhook_router
 
 
@@ -29,6 +32,12 @@ app.include_router(webhook_router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/metrics", dependencies=[Depends(require_key)])
+def metrics():
+    ACTIVE_APPS.set(len(list_apps()))
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/deployments/{deployment_id}", dependencies=[Depends(require_key)])

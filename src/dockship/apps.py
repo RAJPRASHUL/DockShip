@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from dockship import builder, db
 from dockship.db import list_apps
 from dockship.deployer import deploy_image, logs
+from dockship.metrics import record_deployment
 from dockship.models import AppCreate
 
 router = APIRouter(prefix="/apps", tags=["apps"])
@@ -70,9 +71,11 @@ def run_deploy(name: str, deployment_id: str) -> None:
         finally:
             if working_dir:
                 builder.cleanup(working_dir)
-            db.update_deployment(
-                deployment_id, duration_s=time.monotonic() - started
-            )
+            duration = time.monotonic() - started
+            db.update_deployment(deployment_id, duration_s=duration)
+            deployment = db.get_deployment(deployment_id)
+            if deployment and deployment["status"] in {"healthy", "failed"}:
+                record_deployment(deployment["status"], duration)
 
 
 def run_rollback(name: str, deployment_id: str, sha: str) -> None:
@@ -99,9 +102,11 @@ def run_rollback(name: str, deployment_id: str, sha: str) -> None:
         ) as exc:
             db.update_deployment(deployment_id, status="failed", error=str(exc)[-4000:])
         finally:
-            db.update_deployment(
-                deployment_id, duration_s=time.monotonic() - started
-            )
+            duration = time.monotonic() - started
+            db.update_deployment(deployment_id, duration_s=duration)
+            deployment = db.get_deployment(deployment_id)
+            if deployment and deployment["status"] in {"healthy", "failed"}:
+                record_deployment(deployment["status"], duration)
 
 
 @router.post("/{name}/deploy", status_code=202)
