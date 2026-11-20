@@ -1,5 +1,6 @@
 import secrets
 
+import docker
 from fastapi import Depends, FastAPI, Header, HTTPException
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
@@ -7,6 +8,7 @@ from starlette.responses import Response
 from dockship.apps import router as apps_router
 from dockship.config import settings
 from dockship.db import get_deployment, init_db, list_apps
+from dockship.deployer import reconcile_pending_releases
 from dockship.metrics import ACTIVE_APPS
 from dockship.webhook import router as webhook_router
 
@@ -23,6 +25,10 @@ init_db()
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    try:
+        reconcile_pending_releases(docker.from_env())
+    except docker.errors.DockerException:
+        pass
 
 
 app.include_router(apps_router, dependencies=[Depends(require_key)])

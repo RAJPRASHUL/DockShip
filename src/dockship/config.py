@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +14,13 @@ class Settings(BaseSettings):
     health_tries: int = 10
     health_interval_s: int = 3
     drain_s: int = 5
+
+    @field_validator("dockship_api_key", "github_webhook_secret")
+    @classmethod
+    def reject_placeholders(cls, value: str) -> str:
+        if not value or value == "change-me" or len(value) < 8:
+            raise ValueError("secret must be at least 8 characters and not 'change-me'")
+        return value
 
 
 settings = Settings()
