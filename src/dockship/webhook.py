@@ -39,16 +39,28 @@ async def github(
         return {"msg": "pong"}
     if x_github_event != "push":
         return {"ignored": x_github_event}
-    if not x_github_delivery or not db.record_delivery(x_github_delivery):
-        return {"ignored": "duplicate"}
     try:
         payload = json.loads(body)
+        if not isinstance(payload, dict):
+            raise TypeError("push payload must be an object")
         if payload.get("deleted"):
             return {"ignored": "branch deleted"}
-        repo = norm_repo(payload["repository"]["clone_url"])
-        branch = payload["ref"].removeprefix("refs/heads/")
-    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        repository = payload["repository"]
+        ref = payload["ref"]
+        if not isinstance(repository, dict):
+            raise TypeError("repository must be an object")
+        clone_url = repository["clone_url"]
+        if not isinstance(clone_url, str) or not isinstance(ref, str):
+            raise TypeError("clone_url and ref must be strings")
+        repo = norm_repo(clone_url)
+        branch = ref.removeprefix("refs/heads/")
+        if not branch:
+            raise ValueError("missing branch")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=400, detail="invalid push payload") from exc
+
+    if not x_github_delivery or not db.record_delivery(x_github_delivery):
+        return {"ignored": "duplicate"}
 
     queued = []
     for app in db.find_apps(repo, branch):
