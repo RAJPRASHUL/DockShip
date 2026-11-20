@@ -9,7 +9,7 @@ terraform {
   }
 
   backend "s3" {
-    bucket       = "dockship-tfstate-REPLACE_ME"
+    bucket       = "dockship-tfstate-5817325"
     key          = "prod.tfstate"
     region       = "ap-south-1"
     use_lockfile = true
