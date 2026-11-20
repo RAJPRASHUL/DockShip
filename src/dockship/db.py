@@ -1,10 +1,13 @@
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 from dockship.config import settings
+
+_registration_guard = threading.Lock()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS apps (
@@ -16,7 +19,10 @@ CREATE TABLE IF NOT EXISTS apps (
     green_port INTEGER,
     active_color TEXT,
     current_sha TEXT,
-    previous_sha TEXT
+    previous_sha TEXT,
+    pending_sha TEXT,
+    pending_color TEXT,
+    pending_deployment_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS deployments (
@@ -54,6 +60,17 @@ def connect():
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(apps)").fetchall()
+        }
+        for column in (
+            "pending_sha",
+            "pending_color",
+            "pending_deployment_id",
+        ):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE apps ADD COLUMN {column} TEXT")
         conn.commit()
 
 
@@ -99,19 +116,34 @@ def record_delivery(delivery_id: str) -> bool:
 
 
 def create_app(name: str, repo_url: str, branch: str, health_path: str) -> dict:
-    from dockship.ports import allocate_ports
-
-    blue_port, green_port = allocate_ports()
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO apps (name, repo_url, branch, health_path, blue_port, green_port)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (name, repo_url, branch, health_path, blue_port, green_port),
-        )
-        conn.commit()
-    return get_app(name)  # type: ignore[return-value]
+    with _registration_guard:
+        with connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            used = {
+                port
+                for row in conn.execute("SELECT blue_port, green_port FROM apps")
+                for port in (row["blue_port"], row["green_port"])
+                if port is not None
+            }
+            available = [
+                port
+                for port in range(settings.port_min, settings.port_max + 1)
+                if port not in used
+            ]
+            if len(available) < 2:
+                raise RuntimeError("no port pair available")
+            blue_port, green_port = available[0], available[1]
+            conn.execute(
+                """
+                INSERT INTO apps (
+                    name, repo_url, branch, health_path, blue_port, green_port
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (name, repo_url, branch, health_path, blue_port, green_port),
+            )
+            conn.commit()
+        return get_app(name)  # type: ignore[return-value]
 
 
 def new_deployment(app_name: str, trigger: str) -> str:
@@ -161,3 +193,43 @@ def set_release(app_name: str, color: str, sha: str) -> None:
             (sha, color, app_name),
         )
         conn.commit()
+
+
+def set_pending_release(
+    app_name: str, color: str, sha: str, deployment_id: str
+) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE apps
+            SET pending_sha = ?, pending_color = ?, pending_deployment_id = ?
+            WHERE name = ?
+            """,
+            (sha, color, deployment_id, app_name),
+        )
+        conn.commit()
+
+
+def clear_pending_release(app_name: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE apps
+            SET pending_sha = NULL, pending_color = NULL,
+                pending_deployment_id = NULL
+            WHERE name = ?
+            """,
+            (app_name,),
+        )
+        conn.commit()
+
+
+def list_pending_releases() -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM apps
+            WHERE pending_deployment_id IS NOT NULL
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]

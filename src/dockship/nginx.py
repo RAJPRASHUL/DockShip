@@ -43,3 +43,19 @@ def apply(name: str, port: int) -> None:
         else:
             live.write_text(old)
         raise
+
+
+def remove(name: str) -> None:
+    live = Path(settings.nginx_conf_dir) / f"{name}.conf"
+    if not live.exists():
+        return
+    old = live.read_text()
+    live.unlink()
+    try:
+        subprocess.run(["sudo", "nginx", "-t"], check=True, capture_output=True)
+        subprocess.run(
+            ["sudo", "systemctl", "reload", "nginx"], check=True, capture_output=True
+        )
+    except subprocess.CalledProcessError:
+        live.write_text(old)
+        raise

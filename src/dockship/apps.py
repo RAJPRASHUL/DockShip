@@ -6,7 +6,7 @@ import time
 import docker
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from dockship import builder, db
+from dockship import builder, db, nginx
 from dockship.db import list_apps
 from dockship.deployer import deploy_image, logs
 from dockship.metrics import record_deployment
@@ -40,6 +40,7 @@ def register_app(payload: AppCreate) -> dict:
         OSError,
         RuntimeError,
         TimeoutError,
+        sqlite3.Error,
         docker.errors.DockerException,
     ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -133,8 +134,21 @@ def rollback(name: str, background_tasks: BackgroundTasks) -> dict:
 
 @router.delete("/{name}", status_code=204)
 def delete(name: str) -> None:
-    if not db.delete_app(name):
-        raise HTTPException(status_code=404, detail="app not found")
+    with app_lock(name):
+        app = db.get_app(name)
+        if not app:
+            raise HTTPException(status_code=404, detail="app not found")
+        client = docker.from_env()
+        remove_names = [f"{name}-blue", f"{name}-green"]
+        for container_name in remove_names:
+            try:
+                container = client.containers.get(container_name)
+                container.remove(force=True)
+            except docker.errors.NotFound:
+                pass
+        nginx.remove(name)
+        if not db.delete_app(name):
+            raise HTTPException(status_code=404, detail="app not found")
 
 
 @router.get("/{name}/logs")
