@@ -34,14 +34,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      - name: Set image reference
+        shell: bash
+        run: echo "IMAGE_REF=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_ENV"
       - uses: docker/build-push-action@v6
         with:
           context: .
           load: true
-          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          tags: ${{ env.IMAGE_REF }}
       - uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          image-ref: ${{ env.IMAGE_REF }}
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: 1
@@ -50,7 +53,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - run: docker push ghcr.io/${{ github.repository }}:${{ github.sha }}
+      - run: docker push "$IMAGE_REF"
 
   deploy:
     needs: build-scan-push
