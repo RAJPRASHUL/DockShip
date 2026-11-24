@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -15,7 +16,7 @@ jobs:
     env:
       DOCKSHIP_API_KEY: ci-test-api-key-123456
       GITHUB_WEBHOOK_SECRET: ci-test-webhook-secret-123456
-      DB_PATH: ${{ runner.temp }}/dockship.db
+      DB_PATH: ./dockship.db
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
