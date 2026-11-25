@@ -9,6 +9,7 @@ supports rollback.
 
 ## Table of contents
 
+- [Deploy your first website from Windows CMD](#deploy-your-first-website-from-windows-cmd)
 - [Architecture](#architecture)
 - [What is included](#what-is-included)
 - [Prerequisites](#prerequisites)
@@ -27,6 +28,99 @@ supports rollback.
 - [Demo script](#demo-script)
 - [Project layout](#project-layout)
 - [Troubleshooting](#troubleshooting)
+- [License](#license)
+
+## Deploy your first website from Windows CMD
+
+Use this walkthrough with a running DockShip server. To set up your own server,
+start with [AWS deployment](#aws-deployment). If someone else operates DockShip
+for you, send them your trusted repository URL, branch and health-check path.
+The operator runs the deployment commands. The management key controls every
+app on that server.
+
+### 1. Prepare the website repository
+
+Push a `Dockerfile` to the **root of the website's GitHub repository** on the
+branch you want to deploy. The container must serve HTTP on `0.0.0.0:8000`
+(DockShip sets `PORT=8000`). Pick a path that returns HTTP 200, such as
+`/health`, or `/` for a static site. DockShip needs to be able to clone the
+repository over HTTPS. A public repository works with the default setup.
+
+For a working example, copy the **contents** of [examples/hello-app](examples/hello-app/)
+to the root of a new GitHub repository. Its health path is `/health`.
+
+### 2. Connect from Windows Command Prompt
+
+On your PC, open **Command Prompt** (`cmd.exe`). Enter the server's Elastic IP
+when prompted. Adjust the key path if you saved your PEM file somewhere else.
+The corresponding public key must be authorized for the server's `dockship` user.
+
+```bat
+set /p "SERVER_IP=Enter your DockShip server IP: "
+set "SSH_KEY=%USERPROFILE%\Downloads\dockship-key.pem"
+ssh -i "%SSH_KEY%" dockship@%SERVER_IP%
+```
+
+### 3. Register and deploy on the server
+
+When the prompt starts with `dockship@`, you are in the **Linux SSH session**.
+Run the following there. This example uses `portfolio` as the app name and
+`main` as the branch. When prompted, paste the HTTPS URL of your website
+repository, such as `https://github.com/your-account/your-website`.
+
+```bash
+cd /opt/dockship
+. ./.env
+.venv/bin/dockship login --server http://127.0.0.1:8000 --api-key "$DOCKSHIP_API_KEY"
+read -rp 'Website repository URL: ' repo
+.venv/bin/dockship register portfolio "$repo" --branch main --health-path /health
+.venv/bin/dockship deploy portfolio
+```
+
+Use `--health-path /` in the register command if your home page is the health
+check. Register each app once. For later manual updates, run the deploy command
+again. It prints a `deployment_id`. Paste just that ID when prompted below:
+
+```bash
+read -rp 'Deployment ID: ' deployment_id
+.venv/bin/dockship status "$deployment_id"
+```
+
+While the status is `building` or `deploying`, repeat the status command.
+If it says `failed`, read the `error` field. Once it says `healthy`, type
+`exit` to return to the **same Windows CMD window** and open the site:
+
+```bat
+start "" "http://portfolio.%SERVER_IP%.nip.io"
+```
+
+The first part of the hostname is the registered app name. DockShip's default
+Nginx configuration serves this address over HTTP.
+
+### 4. Deploy future pushes automatically
+
+In the **website repository** on GitHub, open **Settings → Webhooks → Add webhook**.
+Choose `application/json`, select **Just the push event**, and leave **Active**
+checked. Use the platform hostname for the payload URL. To print the URL for
+your server, run this in the same **Windows CMD** window:
+
+```bat
+echo http://platform.%SERVER_IP%.nip.io/webhook/github
+```
+
+Paste that URL into **Payload URL**. Then run the command below to copy the
+server's webhook secret directly to your Windows clipboard. Paste it into the
+**Secret** field and click **Add webhook**.
+
+```bat
+ssh -T -i "%SSH_KEY%" dockship@%SERVER_IP% "cd /opt/dockship && set -a && . ./.env && printenv GITHUB_WEBHOOK_SECRET | tr -d '\r\n'" | clip
+```
+
+In **Recent Deliveries**, the initial `ping` should return HTTP 200. Push a
+visible change to the registered branch. A push response of HTTP 202 with
+`{"queued":["portfolio"]}` means DockShip accepted the build. An empty
+`queued` list means no registration matched the repository and branch.
+Refresh the website after the new release passes its health check.
 
 ## Architecture
 
@@ -34,7 +128,8 @@ supports rollback.
 flowchart LR
     Developer[Developer or GitHub push] -->|Push or signed webhook| Nginx[Nginx port 80]
     CLI[DockShip CLI] -->|API key over SSH tunnel| API[FastAPI control plane]
-    Nginx -->|App host or webhook route| API
+    Nginx -->|Platform webhook| API
+    Nginx -->|App hostname| Release
     API -->|Clone and docker build| Docker[Docker host]
     Docker -->|Health-gated containers| Release[Blue/green containers]
     Release -->|Local proxy port| Nginx
@@ -53,7 +148,7 @@ lint -> pytest -> Docker build -> Trivy scan -> GHCR push -> SSH host restart
 
 ## What is included
 
-- Public `/health` endpoint.
+- Control-plane `/health` endpoint on the local API.
 - API-key authentication for management endpoints.
 - HMAC-SHA256 GitHub webhook verification.
 - GitHub delivery-ID deduplication.
@@ -194,13 +289,14 @@ GitHub sends `X-Hub-Signature-256`; DockShip verifies the raw request body.
 GitHub supplies `GITHUB_TOKEN` automatically to Actions with the permissions
 configured in the workflow.
 
-Create these in
-**Repository or production environment: Settings > Secrets and variables > Actions**:
+In the **DockShip repository**, open **Settings → Environments → production →
+Environment secrets → Add environment secret**. The deployment workflow reads
+these two secret names exactly. Environment variables are a separate list.
 
 | Secret | Where to get it |
 | --- | --- |
 | `EC2_HOST` | Elastic IP displayed in the EC2 console |
-| `EC2_SSH_KEY` | Private key belonging to the EC2 key pair |
+| `EC2_SSH_KEY` | Full private key corresponding to a public key authorized for the `dockship` user |
 
 `EC2_SSH_KEY` must contain the private key, including PEM headers, not the EC2
 key-pair name.
@@ -209,8 +305,9 @@ Never commit `.env`, PEM files, AWS credentials, webhook secrets, or API keys.
 
 ## Run the API
 
-The API is available on port `8000` locally. The public endpoints are
-`/health` and `/webhook/github`; management endpoints require
+The API listens on port `8000` locally. Check `/health` on the server or
+through an SSH tunnel. The supplied platform Nginx configuration forwards
+external POST requests to `/webhook/github`. Management endpoints require
 `X-API-Key`.
 
 Example:
@@ -290,8 +387,8 @@ The reserved name `platform` cannot be registered.
 
 Each repository must:
 
-- contain a Dockerfile;
-- listen on the `PORT` environment variable;
+- contain a Dockerfile at the repository root;
+- listen on `0.0.0.0` at the port specified by `PORT` (currently `8000`);
 - expose `/health` or another configured HTTP health path;
 - return HTTP `200` from the health endpoint;
 - use an HTTPS GitHub repository URL.
@@ -415,10 +512,9 @@ backend "s3" {
 
 ### 2. Initialize and provision
 
-Replace `my-key-pair` with the EC2 key-pair name:
+In the same `infra` directory, replace `my-key-pair` with the EC2 key-pair name:
 
 ```bash
-cd infra
 terraform init
 terraform plan -var="key_name=my-key-pair"
 terraform apply -var="key_name=my-key-pair"
@@ -451,9 +547,12 @@ DB_PATH=/var/lib/dockship/dockship.db
 NGINX_CONF_DIR=/etc/nginx/conf.d/dockship
 ```
 
-Install the systemd service:
+After saving `.env`, return to the `ubuntu` administrator account to install
+the systemd service and Nginx configuration:
 
 ```bash
+exit
+cd /opt/dockship
 sudo cp deploy/dockship.service /etc/systemd/system/dockship.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now dockship
@@ -513,14 +612,12 @@ Main-branch job sequence:
 test -> build-scan-push -> deploy
 ```
 
-The test job uses CI-only environment secrets. The deploy job:
-
-1. builds and pushes `ghcr.io/<owner>/<repo>:<commit-sha>`;
-2. connects to EC2 over SSH;
-3. updates `/opt/dockship`;
-4. runs `uv sync --frozen`;
-5. restarts systemd; and
-6. verifies `/health`.
+The test job runs lint and tests with CI-only settings. On `main`,
+`build-scan-push` builds the image, scans it with Trivy, and pushes it to
+`ghcr.io/<lowercase-owner>/<lowercase-repo>:<commit-sha>`. The deploy job
+connects to EC2 over SSH, updates `/opt/dockship`, runs `uv sync --frozen`,
+restarts the DockShip service, and verifies its local `/health` endpoint.
+Website repositories trigger their own deployments through the [GitHub webhook](#github-webhook).
 
 Configure production environment secrets:
 
@@ -583,8 +680,8 @@ Use the example app for a live deployment demonstration.
 
 ### 1. Successful push
 
-Edit `examples/hello-app/main.py`, push it to the registered repository, and
-open:
+With the example files at the root of the registered website repository and
+its webhook configured, edit `main.py`, push to the registered branch, and open:
 
 ```text
 http://hello.<elastic-ip>.nip.io
@@ -734,7 +831,11 @@ docker logs hello-blue
 docker logs hello-green
 ```
 
-### Terraform placeholder remains
+### Terraform state bucket setup
 
-Replace `dockship-tfstate-REPLACE_ME` in `infra/main.tf` with the bucket
-printed by `infra/bootstrap.sh`.
+For a new installation, set the S3 backend bucket in `infra/main.tf` to the
+one printed by `infra/bootstrap.sh` before running `terraform init`.
+
+## License
+
+DockShip is distributed under the [MIT License](LICENSE).
